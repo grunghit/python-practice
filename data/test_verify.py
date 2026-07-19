@@ -154,12 +154,28 @@ class Robustness(unittest.TestCase):
         # should not raise; id 999 becomes a failing error record
         self.assertErrorRecord(m, 999)
 
-    def test_malformed_C3_prompt_does_not_crash(self):
+    def test_missing_C3_trace_line_is_guarded(self):
+        # C3 now reads the trace_line field (not the prompt). A question missing
+        # it must produce a failing error record, not crash or silently pass.
         def m(qs):
-            q = next(q for q in qs if q["category"] == "C3")
-            q["prompt"] = "no line reference here"
+            next(q for q in qs if q["category"] == "C3").pop("trace_line")
         q = next(q for q in REAL if q["category"] == "C3")
         self.assertErrorRecord(m, q["id"])
+
+    def test_missing_C5_trace_fields_are_guarded(self):
+        def m(qs):
+            next(q for q in qs if q["category"] == "C5").pop("trace_var")
+        q = next(q for q in REAL if q["category"] == "C5")
+        self.assertErrorRecord(m, q["id"])
+
+    def test_C3_prompt_wording_does_not_affect_verification(self):
+        # the decoupling this change bought: rewording the prompt must NOT
+        # break the check, because truth now comes from trace_line, not text.
+        def m(qs):
+            next(q for q in qs if q["category"] == "C3")["prompt"] = "reworded, no line ref"
+        results, _, _ = run_mutated(m)
+        self.assertEqual(failures(results), [],
+                         msg="prompt rewording broke a check — still coupled to prompt text")
 
     def test_missing_options_is_guarded(self):
         def m(qs):

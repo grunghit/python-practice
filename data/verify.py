@@ -163,12 +163,12 @@ def replace_line(code, lineno, new_stripped):
     return "\n".join(lines)
 
 
-# -------------------------------- result table --------------------------------
-results = []  # (id, cat, tier, ok, computed, expected, note)
-
-
-def record(qid, cat, tier, ok, computed, expected, note=""):
-    results.append((qid, cat, tier, ok, computed, expected, note))
+def apply_line_fix(code, start, end, new_lines):
+    """Return code with physical lines start..end (inclusive, 1-based) replaced
+    by `new_lines`. Each replacement line carries its own indentation, so this
+    can turn one line into several (e.g. wrapping a statement in an `if`)."""
+    lines = code.split("\n")
+    return "\n".join(lines[:start - 1] + list(new_lines) + lines[end:])
 
 
 def as_option_text(value):
@@ -177,15 +177,29 @@ def as_option_text(value):
 
 
 # ---------------------------- assisted-tier tables ----------------------------
-# C6: the shipped code is meant to raise. We verify the error premise
-# mechanically (the code really raises this exception). Which fix is correct is
-# the author's assertion; the expected fixed output is documented for the reader.
-C6_RAISES = {
-    176: ("IndexError", "fixed prints -2 (sum of adjacent diffs)"),
-    175: ("TypeError", "fixed prints 215 (int-cast slices)"),
-    177: ("TypeError", "fixed prints VIOLET"),
-    180: ("ValueError", "fixed leaves [7, 6, 4, 2]"),
-    178: ("IndexError", "fixed leaves [5, 9, 5, 9]"),
+# C6 ("fix the error"). For each question we verify, against the REAL buggy code:
+#   1. it raises the expected exception (the error premise), and
+#   2. applying the fix makes it run clean and print the intended answer.
+# The fix is a line-range replacement (start, end, [new_lines]) applied to the
+# shipped code. `expect` is the intended output, asserted independently of the
+# run so a broken fix or wrong answer is caught rather than confirmed circularly.
+# For fixes that are a single-line replacement, the harness also checks that the
+# replacement text actually appears in options[correct_index] — tying the
+# verified fix back to the marked-correct option. Prose fixes (a structural
+# rewrite that isn't a verbatim code line in the option) can't be cross-checked
+# that way and are flagged as such in the report.
+C6 = {
+    176: {"raises": "IndexError", "fix": (3, 3, ["for i in range(len(items) - 1):"]),
+          "expect": "-2"},
+    175: {"raises": "TypeError",  "fix": (5, 5, ["    parts.append(int(S[st:st + 2]))"]),
+          "expect": "215"},
+    177: {"raises": "TypeError",  "fix": (4, 4, ["    res = res + ch.upper()"]),
+          "expect": "VIOLET"},
+    180: {"raises": "ValueError", "fix": (3, 3, ["    if arr.count(5) > 0:",
+                                                 "        arr.remove(5)"]),
+          "expect": "[7, 6, 4, 2]"},
+    178: {"raises": "IndexError", "fix": (2, 5, ["print([x for x in L if x % 2 != 0])"]),
+          "expect": "[5, 9, 5, 9]"},
 }
 
 # C7: a one-line change (lineno, replacement) applied to the shipped code, plus
@@ -236,9 +250,18 @@ def c2_predicate(qid, code):
 
 
 # --------------------------------- run checks ---------------------------------
-def main():
-    with open(QUESTIONS_PATH, encoding="utf-8") as f:
-        questions = json.load(f)["questions"]
+def evaluate(questions):
+    """Run every check against the given parsed questions.
+
+    Pure and self-contained: builds its own result list, mutates no global
+    state, and can be called repeatedly with different data (that's what makes
+    the harness testable). Returns (results, coverage_ok, missing_ids), where
+    results is a list of (id, cat, tier, ok, computed, expected, note) tuples.
+    """
+    results = []
+
+    def record(qid, cat, tier, ok, computed, expected, note=""):
+        results.append((qid, cat, tier, ok, computed, expected, note))
 
     for q in sorted(questions, key=lambda x: x["id"]):
         qid = q.get("id", "?")
@@ -273,12 +296,39 @@ def main():
                 record(qid, cat, "mech", computed == correct, computed, correct,
                        f"{var} after iter {n}")
 
-            elif cat == "C6":                   # verify the error premise
-                if qid not in C6_RAISES:
-                    raise KeyError(f"no C6 expectation for id {qid} — add one to C6_RAISES")
-                want, note = C6_RAISES[qid]
-                _, err, _ = run(q["code"])
-                record(qid, cat, "assist", err == want, err, want, note)
+            elif cat == "C6":                   # premise + the fix actually works
+                if qid not in C6:
+                    raise KeyError(f"no C6 expectation for id {qid} — add one to C6")
+                spec = C6[qid]
+                start, end, new_lines = spec["fix"]
+
+                _, buggy_err, _ = run(q["code"])              # 1. error premise
+                fixed = apply_line_fix(q["code"], start, end, new_lines)
+                fixed_out, fixed_err, _ = run(fixed)          # 2. fix works + right answer
+
+                premise_ok = buggy_err == spec["raises"]
+                fix_ok = fixed_err is None and fixed_out == spec["expect"]
+
+                # 3. for a single-line replacement, the fix text must appear in the
+                #    marked-correct option (ties the working fix to the option).
+                single_line = start == end and len(new_lines) == 1
+                if single_line:
+                    xref_ok = new_lines[0].strip() in q["options"][q["correct_index"]]
+                    note = "premise+fix+option"
+                else:
+                    xref_ok = True                            # prose fix: not text-checkable
+                    note = "premise+fix (option text not machine-checked)"
+
+                ok = premise_ok and fix_ok and xref_ok
+                if not premise_ok:
+                    computed = f"buggy raised {buggy_err}"
+                elif not fix_ok:
+                    computed = f"fixed -> {fixed_err or fixed_out!r}"
+                elif not xref_ok:
+                    computed = "fix text not found in correct option"
+                else:
+                    computed = f"raises {buggy_err}, fixed -> {spec['expect']}"
+                record(qid, cat, "assist", ok, computed, spec["expect"], note)
 
             elif cat == "C7":                   # verify effect of the one-line change
                 if qid not in C7_CHANGE:
@@ -299,15 +349,20 @@ def main():
         except Exception as e:                  # noqa: BLE001 — turn any fault into a failed check
             record(qid, cat, "error", False, f"<{type(e).__name__}: {e}>", "—")
 
-    # ------------------------------- coverage guard -------------------------------
     # A check must exist for every question. If counts diverge, something was
     # skipped — never let that pass as green.
     checked_ids = {r[0] for r in results}
     all_ids = {q.get("id", "?") for q in questions}
     missing = all_ids - checked_ids
     coverage_ok = (len(results) == len(questions)) and not missing
+    return results, coverage_ok, missing
 
-    # ---------------------------------- report ----------------------------------
+
+def main(path=QUESTIONS_PATH):
+    with open(path, encoding="utf-8") as f:
+        questions = json.load(f)["questions"]
+    results, coverage_ok, missing = evaluate(questions)
+
     print("=" * 78)
     print(f"{'ID':>4} {'CAT':<4} {'TIER':<7} {'OK':<4} computed  vs  expected   | note")
     print("=" * 78)

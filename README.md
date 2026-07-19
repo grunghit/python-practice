@@ -23,8 +23,9 @@ python3 -m http.server 8000
 # then open http://localhost:8000
 ```
 
-No build step, no dependencies to install. Prism.js and Google Fonts load from a
-CDN; the app still runs without them (plain text fallback, system fonts).
+No build step, no dependencies to install. Prism.js is vendored under
+`vendor/prism/`, so syntax highlighting works fully offline with no CDN. Google
+Fonts still loads from a CDN, with a graceful system-font fallback if it's blocked.
 
 ---
 
@@ -47,12 +48,15 @@ CDN; the app still runs without them (plain text fallback, system fonts).
 - **Scoring & progress** — live correct/answered/total, progress bar, end-of-set
   summary with a per-category breakdown.
 - **Filters** by category and difficulty (קל / בינוני / קשה).
-- **Keyboard** — `1`–`5` select, `←`/`→` navigate (RTL-aware), `Enter` next.
+- **Keyboard** — `1`–`5` select, `←`/`→` navigate (RTL-aware), `Enter` next,
+  `R` reshuffle.
 - **Persistence** (`localStorage`, wrapped in try/catch) — best score, per-topic
   mastery, and the list of missed questions, across sessions. In-tab session
   resume via `sessionStorage`.
-- **Accessibility** — radiogroup roles, `aria-live` feedback, visible focus rings,
-  skip link, `prefers-reduced-motion`, ≥4.5:1 contrast in light **and** dark.
+- **Accessibility** — labeled answer-button group with per-option screen-reader
+  status (correct/selected), `aria-live` feedback, `aria-keyshortcuts`, visible
+  focus rings, skip link, `prefers-reduced-motion`, ≥4.5:1 contrast in light
+  **and** dark.
 - **Dark / light theme** toggle (follows OS preference by default).
 - **Responsive** down to ~360px; the code panel scrolls horizontally, never wraps.
 
@@ -62,14 +66,20 @@ CDN; the app still runs without them (plain text fallback, system fonts).
 
 ```
 python-practice/
-  index.html              UI structure (RTL)
-  css/styles.css          theme tokens, layout, light/dark
-  js/app.js               all app logic (vanilla JS, no framework)
-  js/questions-data.js    offline fallback — mirror of questions.json (generated)
-  data/questions.json     the 45 questions (the data contract)
-  data/verification.md    correctness report (all answers verified by execution)
-  data/verify.py          re-runnable verification harness
-  README.md               this file
+  index.html                    UI structure (RTL)
+  css/styles.css                theme tokens, layout, light/dark
+  js/app.js                     all app logic (vanilla JS, no framework)
+  js/questions-data.js          offline fallback — mirror of questions.json (generated)
+  vendor/prism/                 vendored Prism (core + Python grammar + theme), offline
+  data/questions.json           the 45 questions (the data contract)
+  data/verify.py                re-runnable verification harness
+  data/test_verify.py           self-tests for the harness
+  data/verification.md          point-in-time correctness snapshot (verify.py is source of truth)
+  build-fallback.py             regenerates js/questions-data.js from questions.json
+  build-standalone.py           builds a single-file dist/index.html
+  .github/workflows/verify.yml  CI: harness + self-tests + fallback-sync check
+  LICENSE                       MIT
+  README.md                     this file
 ```
 
 ### Data schema (`data/questions.json`)
@@ -111,6 +121,13 @@ the Hebrew prompt. They are **required** for those categories:
 If either field is missing (or disagrees with the code), `verify.py` reports that
 question as an error and exits non-zero.
 
+**After editing `questions.json`**, regenerate the offline mirror so the two stay
+in sync — CI fails if they drift:
+```bash
+python3 build-fallback.py            # rewrites js/questions-data.js
+python3 build-fallback.py --check    # what CI runs; exits non-zero if out of sync
+```
+
 ---
 
 ## Correctness
@@ -133,3 +150,9 @@ and the modified/fixed code are executed to confirm the claimed effect.
 `#4338CA`, semantic green/red for feedback, and a dark code panel
 (`#1E1E2E` / `#CDD6F4`) with a filename tab (`trace.py`), traffic-light dots and a
 numbered gutter. Heebo for Hebrew UI, JetBrains Mono for code.
+
+---
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).

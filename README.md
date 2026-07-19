@@ -88,6 +88,29 @@ python-practice/
 `options[0]` is the correct answer by convention; the UI shuffles display order
 and tracks the correct position. If you add questions, keep this contract.
 
+**Category-specific fields.** Two categories carry extra fields that the
+verification harness (`data/verify.py`) reads directly, so it never has to parse
+the Hebrew prompt. They are **required** for those categories:
+
+- **C3** (count how many times a line runs) — `"trace_line": <int>`: the 1-based
+  line number in `code` whose executions are counted. It must match the line the
+  prompt names (`שורה N`).
+- **C5** (value after iteration N) — `"trace_var": "<name>"` and
+  `"trace_iter": <int>`: the variable to inspect and the 1-based iteration after
+  which to read it. Both must match the prompt.
+
+```jsonc
+// C3 example
+{ …, "category": "C3", "prompt": "…בשורה 8?", "trace_line": 8, … }
+
+// C5 example
+{ …, "category": "C5", "prompt": "…acc בתום האיטרציה ה-2?",
+  "trace_var": "acc", "trace_iter": 2, … }
+```
+
+If either field is missing (or disagrees with the code), `verify.py` reports that
+question as an error and exits non-zero.
+
 ---
 
 ## Correctness

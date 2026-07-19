@@ -11,8 +11,9 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
 
-  <!-- Prism.js (real Python syntax highlighter) -->
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" />
+  <!-- Prism.js (real Python syntax highlighter) — vendored locally so it works
+       offline (file://) and has no CDN/supply-chain dependency -->
+  <link rel="stylesheet" href="vendor/prism/prism-tomorrow.min.css" />
 
   <link rel="stylesheet" href="css/styles.css" />
 </head>
@@ -165,9 +166,9 @@
     <p>נבנה לתרגול לבחינה</p>
   </footer>
 
-  <!-- Prism core + Python grammar -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+  <!-- Prism core + Python grammar (vendored locally) -->
+  <script src="vendor/prism/prism-core.min.js"></script>
+  <script src="vendor/prism/prism-python.min.js"></script>
 
   <!-- Offline data fallback (used if fetch is blocked under file://) -->
   <script src="js/questions-data.js"></script>

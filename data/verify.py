@@ -1,388 +1,225 @@
 # -*- coding: utf-8 -*-
-"""Ground-truth verification harness for the code-tracing questions.
+"""Self-tests for verify.py — the tests the harness must pass to be trusted.
 
-Single source of truth: data/questions.json. Every check below executes the
-**actual shipped code** from that file — there is no second, hand-copied copy
-of any snippet here. If a question's code drifts from its answer, this harness
-fails.
+The harness's one job is to never report success while something is wrong.
+So besides checking that the real question bank passes (the happy path), this
+suite deliberately BREAKS the data in every way we've seen matter and asserts
+the harness *catches* it. These are the ad-hoc probes from development, frozen
+so they can't regress.
 
-Two tiers of checks:
-
-  MECHANICAL (C1, C3, C4, C5) — the correct answer is computed purely by
-  running/instrumenting the shipped code, then compared to
-  options[correct_index]. No per-question data lives in this file.
-
-  ASSISTED (C2, C6, C7) — the answer is a natural-language statement, so it
-  can't be selected by execution alone. For these we keep a small, auditable
-  table of *structured expectations* (an expected exception, a one-line code
-  change, an expected effect) and verify each one against the shipped code by
-  executing it. The code is still never duplicated here.
-
-Run:  python3 verify.py        # prints a per-question OK/XX table
-Exit code is non-zero if any check fails.
+Run:  python3 -m unittest -v          (from the data/ directory)
+   or python3 data/test_verify.py    (from anywhere)
 """
-import io
 import os
-import re
-import ast
 import sys
 import copy
 import json
-import contextlib
+import unittest
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-# verify.py lives in data/ alongside questions.json
-QUESTIONS_PATH = os.path.join(HERE, "questions.json")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import verify  # noqa: E402
 
-
-# ------------------------------ execution helpers ------------------------------
-def run(code):
-    """Exec code in a fresh namespace. Return (stdout_stripped, exc_name|None, ns)."""
-    buf = io.StringIO()
-    exc = None
-    ns = {}
-    try:
-        with contextlib.redirect_stdout(buf):
-            exec(compile(code, "<question>", "exec"), ns)
-    except Exception as e:  # noqa: BLE001 — we want to report any failure type
-        exc = type(e).__name__
-    return buf.getvalue().strip(), exc, ns
+REAL = json.load(open(verify.QUESTIONS_PATH, encoding="utf-8"))["questions"]
 
 
-def count_line_runs(code, lineno):
-    """How many times physical line `lineno` executes in the shipped code."""
-    runs = [0]
-
-    def tracer(frame, event, arg):
-        if event == "call":
-            return tracer
-        if event == "line" and frame.f_lineno == lineno:
-            runs[0] += 1
-        return tracer
-
-    prev = sys.gettrace()
-    sys.settrace(tracer)
-    try:
-        with contextlib.redirect_stdout(io.StringIO()):
-            exec(compile(code, "<question>", "exec"), {})
-    except Exception:
-        pass
-    finally:
-        sys.settrace(prev)
-    return runs[0]
+def by_id(questions, qid):
+    return next(q for q in questions if q["id"] == qid)
 
 
-def var_after_iteration(code, var, n):
-    """Value of `var` at the end of the 1-based nth iteration of the snippet's
-    single top-level loop.
-
-    Contract (asserted, not assumed):
-      * Exactly one loop at module top level — a `for` or a `while`. Nested
-        loops inside its body are allowed; two sequential top-level loops make
-        "iteration N" ambiguous and are rejected, as is a loop wrapped in a
-        function (not reached at module level) and a single-line loop body.
-      * The loop must actually run at least N iterations.
-    Any violation raises, so the harness reports the question as an error rather
-    than silently measuring the wrong loop or the wrong iteration.
-
-    Mechanics: we watch line events in the module frame and keep the most recent
-    value of `var` seen on a line *inside the loop body*. That pending value is
-    committed as "end of this iteration" the moment control leaves the body —
-    whether the loop header re-fires (next iteration / normal exhaustion) or
-    execution jumps past the loop (a `break`). This captures the break iteration
-    correctly, unlike counting header re-fires alone. Snapshots are deep-copied
-    so later mutation of a list/dict can't corrupt an earlier one; counting is
-    restricted to the module frame so nested calls can't interfere.
-    """
-    if n < 1:
-        raise ValueError(f"iteration number must be >= 1, got {n}")
-
-    top_loops = [node for node in ast.parse(code).body
-                 if isinstance(node, (ast.For, ast.While))]
-    if len(top_loops) != 1:
-        raise ValueError(
-            f"C5 needs exactly one top-level loop (for/while); found "
-            f"{len(top_loops)}. Nested loops are fine; two sibling loops or a "
-            f"loop inside a function are not supported."
-        )
-    loop = top_loops[0]
-    header = loop.lineno
-    # last body line — the loop's own body only (an `else:` clause is excluded,
-    # since its statements run after the loop, not within an iteration).
-    body_end = max(getattr(stmt, "end_lineno", stmt.lineno) for stmt in loop.body)
-    if body_end <= header:
-        raise ValueError("single-line loop body is not supported by the C5 harness")
-
-    ends = []
-    in_body = [False]
-
-    def capture(frame):
-        ends.append(copy.deepcopy(frame.f_locals.get(var)))
-        in_body[0] = False
-
-    def tracer(frame, event, arg):
-        if event == "call":
-            return tracer
-        if frame.f_code.co_name != "<module>":
-            return tracer
-        if event == "line":
-            ln = frame.f_lineno
-            if header < ln <= body_end:      # executing a line inside the body
-                in_body[0] = True
-            elif in_body[0]:                 # first line after the body ran:
-                capture(frame)               # header re-fire, or the line past a break
-        elif event == "return" and in_body[0]:
-            capture(frame)                   # loop was the last statement (break, no trailing line)
-        return tracer
-
-    prev = sys.gettrace()
-    sys.settrace(tracer)
-    try:
-        with contextlib.redirect_stdout(io.StringIO()):
-            exec(compile(code, "<question>", "exec"), {})
-    except Exception:
-        pass
-    finally:
-        sys.settrace(prev)
-
-    if n > len(ends):
-        raise ValueError(
-            f"loop completed only {len(ends)} iteration(s); cannot read the "
-            f"value after iteration {n}"
-        )
-    return ends[n - 1]
+def run_mutated(mutate):
+    """Deep-copy the real bank, apply `mutate`, evaluate. Returns
+    (results, coverage_ok, missing)."""
+    qs = copy.deepcopy(REAL)
+    mutate(qs)
+    return verify.evaluate(qs)
 
 
-def replace_line(code, lineno, new_stripped):
-    """Return code with physical line `lineno` swapped for `new_stripped`,
-    preserving the original line's indentation."""
-    lines = code.split("\n")
-    original = lines[lineno - 1]
-    indent = original[: len(original) - len(original.lstrip())]
-    lines[lineno - 1] = indent + new_stripped
-    return "\n".join(lines)
+def failures(results):
+    return [r for r in results if not r[3]]   # r[3] is the ok flag
 
 
-def apply_line_fix(code, start, end, new_lines):
-    """Return code with physical lines start..end (inclusive, 1-based) replaced
-    by `new_lines`. Each replacement line carries its own indentation, so this
-    can turn one line into several (e.g. wrapping a statement in an `if`)."""
-    lines = code.split("\n")
-    return "\n".join(lines[:start - 1] + list(new_lines) + lines[end:])
+class HappyPath(unittest.TestCase):
+    """The real, shipped question bank must verify cleanly."""
+
+    def setUp(self):
+        self.results, self.coverage_ok, self.missing = verify.evaluate(copy.deepcopy(REAL))
+
+    def test_all_checks_pass(self):
+        self.assertEqual(failures(self.results), [],
+                         msg="a real question failed verification")
+
+    def test_coverage(self):
+        self.assertTrue(self.coverage_ok)
+        self.assertEqual(self.missing, set())
+        self.assertEqual(len(self.results), len(REAL))
+
+    def test_one_record_per_question(self):
+        # the property that prevents a silent false-green: every question
+        # produces exactly one check.
+        ids = [r[0] for r in self.results]
+        self.assertEqual(len(ids), len(REAL))
+
+    def test_evaluate_is_repeatable(self):
+        # no global state: a second call must not accumulate.
+        again, _, _ = verify.evaluate(copy.deepcopy(REAL))
+        self.assertEqual(len(again), len(self.results))
 
 
-def as_option_text(value):
-    """Render a computed Python value the way the options store it."""
-    return value if isinstance(value, str) else str(value)
+class NoFalseGreen(unittest.TestCase):
+    """Corrupt an answer or a snippet; the harness must flag it. One test per
+    category, since each category derives truth differently."""
+
+    def assertCaught(self, mutate):
+        results, coverage_ok, _ = run_mutated(mutate)
+        self.assertTrue(failures(results) or not coverage_ok,
+                        msg="harness did NOT catch an injected fault (false green)")
+
+    def test_C1_code_drift(self):
+        def m(qs):
+            q = next(q for q in qs if q["category"] == "C1")
+            q["code"] = q["code"] + "\nprint('EXTRA')"
+        self.assertCaught(m)
+
+    def test_C4_answer_corrupted(self):
+        def m(qs):
+            q = next(q for q in qs if q["category"] == "C4")
+            q["options"][q["correct_index"]] = "__wrong__"
+        self.assertCaught(m)
+
+    def test_C3_answer_corrupted(self):
+        def m(qs):
+            q = next(q for q in qs if q["category"] == "C3")
+            q["options"][q["correct_index"]] = "99999"
+        self.assertCaught(m)
+
+    def test_C5_answer_corrupted(self):
+        def m(qs):
+            q = next(q for q in qs if q["category"] == "C5")
+            q["options"][q["correct_index"]] = "__wrong__"
+        self.assertCaught(m)
+
+    def test_C6_distractor_marked_correct(self):
+        # the gap this category's upgrade closed: correct_index -> a distractor.
+        # Use a line-replacement question (175) whose option text is cross-checked.
+        def m(qs):
+            by_id(qs, 175)["correct_index"] = 2
+        self.assertCaught(m)
+
+    def test_C6_premise_broken(self):
+        # buggy code no longer raises -> premise fails.
+        def m(qs):
+            q = by_id(qs, 177)
+            q["code"] = q["code"].replace("txt[ch]", "ch")
+        self.assertCaught(m)
+
+    def test_C7_effect_drift(self):
+        # change the snippet so the modification's effect differs from expected.
+        def m(qs):
+            q = by_id(qs, 123)
+            q["code"] = q["code"].replace("a = [", "a = [0, ")
+        self.assertCaught(m)
+
+    def test_C2_premise_broken(self):
+        # 149's true statement relies on len(a)==5; change the data so it isn't.
+        def m(qs):
+            q = by_id(qs, 149)
+            q["code"] = q["code"].replace("a = [", "a = [99, ")
+        self.assertCaught(m)
 
 
-# ---------------------------- assisted-tier tables ----------------------------
-# C6 ("fix the error"). For each question we verify, against the REAL buggy code:
-#   1. it raises the expected exception (the error premise), and
-#   2. applying the fix makes it run clean and print the intended answer.
-# The fix is a line-range replacement (start, end, [new_lines]) applied to the
-# shipped code. `expect` is the intended output, asserted independently of the
-# run so a broken fix or wrong answer is caught rather than confirmed circularly.
-# For fixes that are a single-line replacement, the harness also checks that the
-# replacement text actually appears in options[correct_index] — tying the
-# verified fix back to the marked-correct option. Prose fixes (a structural
-# rewrite that isn't a verbatim code line in the option) can't be cross-checked
-# that way and are flagged as such in the report.
-C6 = {
-    176: {"raises": "IndexError", "fix": (3, 3, ["for i in range(len(items) - 1):"]),
-          "expect": "-2"},
-    175: {"raises": "TypeError",  "fix": (5, 5, ["    parts.append(int(S[st:st + 2]))"]),
-          "expect": "215"},
-    177: {"raises": "TypeError",  "fix": (4, 4, ["    res = res + ch.upper()"]),
-          "expect": "VIOLET"},
-    180: {"raises": "ValueError", "fix": (3, 3, ["    if arr.count(5) > 0:",
-                                                 "        arr.remove(5)"]),
-          "expect": "[7, 6, 4, 2]"},
-    178: {"raises": "IndexError", "fix": (2, 5, ["print([x for x in L if x % 2 != 0])"]),
-          "expect": "[5, 9, 5, 9]"},
-}
+class Robustness(unittest.TestCase):
+    """Malformed input must produce a failing *record*, never crash the run,
+    and never silently vanish."""
 
-# C7: a one-line change (lineno, replacement) applied to the shipped code, plus
-# the effect it should produce. The effect string is derived by executing the
-# real code before/after — so it tracks the shipped snippet.
-C7_CHANGE = {
-    119: (3, "for i in range(1, len(nums)):", "no change"),
-    124: (5, "pass", "no change"),
-    121: (3, "for i in range(len(vals) + 1):", "raises IndexError"),
-    122: (3, "for i in range(0, len(s), 2):", "MARKETCAR -> MRECR"),
-    123: (2, "b = a[:]", "5 -> 3"),
-    125: (4, "if x >= 13:", "no change"),
-    128: (3, "for i in range(1, len(L)):", "no change"),
-}
+    def assertErrorRecord(self, mutate, qid):
+        results, _, _ = run_mutated(mutate)
+        row = next((r for r in results if r[0] == qid), None)
+        self.assertIsNotNone(row, msg=f"question {qid} produced no record")
+        self.assertFalse(row[3], msg=f"question {qid} should have failed")
 
+    def test_unknown_category_is_error_not_skip(self):
+        def m(qs):
+            by_id(qs, 5)["category"] = "c1"   # lowercase typo
+        # must still produce a record for id 5 (not silently dropped) and fail
+        self.assertErrorRecord(m, 5)
+        # and the total record count is unchanged (nothing vanished)
+        results, _, _ = run_mutated(m)
+        self.assertEqual(len(results), len(REAL))
 
-def c7_effect(code, lineno, replacement):
-    o_out, o_err, _ = run(code)
-    m_out, m_err, _ = run(replace_line(code, lineno, replacement))
-    if o_err or m_err:
-        return f"raises {m_err}" if m_err and not o_err else f"orig {o_err} / mod {m_err}"
-    if o_out == m_out:
-        return "no change"
-    return f"{o_out} -> {m_out}"
+    def test_new_assisted_id_does_not_crash(self):
+        def m(qs):
+            clone = copy.deepcopy(by_id(qs, 176))
+            clone["id"] = 999            # C6 id with no expectation entry
+            qs.append(clone)
+        # should not raise; id 999 becomes a failing error record
+        self.assertErrorRecord(m, 999)
 
+    def test_missing_C3_trace_line_is_guarded(self):
+        # C3 now reads the trace_line field (not the prompt). A question missing
+        # it must produce a failing error record, not crash or silently pass.
+        def m(qs):
+            next(q for q in qs if q["category"] == "C3").pop("trace_line")
+        q = next(q for q in REAL if q["category"] == "C3")
+        self.assertErrorRecord(m, q["id"])
 
-# C2: natural-language statements. Each predicate establishes the objective fact
-# the true statement relies on, by executing the shipped code (and, where the
-# statement is about a hypothetical edit, applying that edit to the real code).
-def c2_predicate(qid, code):
-    if qid in (149, 155):                       # aliasing: len(a) ends at 5
-        _, _, ns = run(code)
-        return len(ns["a"]) == 5, f"len(a)={len(ns['a'])}"
-    if qid == 151:                              # loop body runs exactly 5 times
-        n = count_line_runs(code, 3)            # first body line
-        return n == 5, f"body runs {n}x"
-    if qid == 152:                              # sorted() leaves vals unchanged
-        literal = re.search(r"vals\s*=\s*(\[[^\]]*\])", code).group(1)
-        _, _, ns = run(code)
-        return ns["vals"] == json.loads(literal), f"vals={ns['vals']}"
-    if qid == 154:                              # res ends at 3 (find returns -1)
-        _, _, ns = run(code)
-        return ns["res"] == 3, f"res={ns['res']}"
-    if qid == 150:                              # adding print(sum(parts)) -> TypeError
-        _, err, _ = run(code + "\nprint(sum(parts))")
-        return err == "TypeError", f"sum(parts) raises {err}"
-    return None, "no predicate"
+    def test_missing_C5_trace_fields_are_guarded(self):
+        def m(qs):
+            next(q for q in qs if q["category"] == "C5").pop("trace_var")
+        q = next(q for q in REAL if q["category"] == "C5")
+        self.assertErrorRecord(m, q["id"])
+
+    def test_C3_prompt_wording_does_not_affect_verification(self):
+        # the decoupling this change bought: rewording the prompt must NOT
+        # break the check, because truth now comes from trace_line, not text.
+        def m(qs):
+            next(q for q in qs if q["category"] == "C3")["prompt"] = "reworded, no line ref"
+        results, _, _ = run_mutated(m)
+        self.assertEqual(failures(results), [],
+                         msg="prompt rewording broke a check — still coupled to prompt text")
+
+    def test_missing_options_is_guarded(self):
+        def m(qs):
+            by_id(qs, 5).pop("options")
+        self.assertErrorRecord(m, 5)
 
 
-# --------------------------------- run checks ---------------------------------
-def evaluate(questions):
-    """Run every check against the given parsed questions.
+class VarAfterIterationContract(unittest.TestCase):
+    """The C5 loop helper: correctness on supported shapes, loud failure on
+    unsupported ones."""
+    f = staticmethod(verify.var_after_iteration)
 
-    Pure and self-contained: builds its own result list, mutates no global
-    state, and can be called repeatedly with different data (that's what makes
-    the harness testable). Returns (results, coverage_ok, missing_ids), where
-    results is a list of (id, cat, tier, ok, computed, expected, note) tuples.
-    """
-    results = []
+    def test_single_for(self):
+        self.assertEqual(self.f("acc=0\nfor x in [10,20,30]:\n    acc=acc+x\n", "acc", 2), 30)
 
-    def record(qid, cat, tier, ok, computed, expected, note=""):
-        results.append((qid, cat, tier, ok, computed, expected, note))
+    def test_while_loop(self):
+        self.assertEqual(self.f("i=0\nacc=0\nwhile i<3:\n    acc=acc+i\n    i=i+1\n", "acc", 2), 1)
 
-    for q in sorted(questions, key=lambda x: x["id"]):
-        qid = q.get("id", "?")
-        cat = q.get("category", "?")
-        # Each question is guarded: a malformed prompt, missing id, or bad
-        # category fails *that* check (and is reported) instead of crashing the
-        # whole run. Every question therefore always produces exactly one record.
-        try:
-            correct = q["options"][q["correct_index"]]
+    def test_nested_single_top(self):
+        self.assertEqual(self.f("t=0\nfor i in range(3):\n    for j in range(2):\n        t=t+1\n", "t", 1), 2)
 
-            if cat in ("C1", "C4"):             # answer is the printed output
-                out, err, _ = run(q["code"])
-                computed = f"<{err}>" if err else out
-                record(qid, cat, "mech", computed == correct, computed, correct)
+    def test_list_value_is_deepcopied(self):
+        self.assertEqual(self.f("out=[]\nfor i in range(4):\n    out.append(i)\n", "out", 2), [0, 1])
 
-            elif cat == "C3":                   # answer is a line-execution count
-                m = re.search(r"שורה\s*(\d+)", q["prompt"])
-                if not m:
-                    raise ValueError("C3 prompt has no 'שורה N' line reference")
-                lineno = int(m.group(1))
-                computed = str(count_line_runs(q["code"], lineno))
-                record(qid, cat, "mech", computed == correct, computed, correct,
-                       f"line {lineno}")
+    def test_break_at_iteration_N(self):
+        code = "acc=0\ncnt=0\nfor x in [1,2,3,4]:\n    acc=acc+x\n    cnt=cnt+1\n    if cnt==2: break\n"
+        self.assertEqual(self.f(code, "acc", 2), 3)
 
-            elif cat == "C5":                   # answer is var value after iter N
-                mv = re.search(r"המשתנה\s+([A-Za-z_]\w*)", q["prompt"])
-                mn = re.search(r"האיטרציה\s*ה-?\s*(\d+)", q["prompt"])
-                if not (mv and mn):
-                    raise ValueError("C5 prompt missing variable or iteration N")
-                var, n = mv.group(1), int(mn.group(1))
-                computed = as_option_text(var_after_iteration(q["code"], var, n))
-                record(qid, cat, "mech", computed == correct, computed, correct,
-                       f"{var} after iter {n}")
+    def test_two_sibling_loops_rejected(self):
+        with self.assertRaises(ValueError):
+            self.f("a=0\nfor x in [1,2]:\n    a=a+x\nfor y in [3,4]:\n    a=a+y\n", "a", 1)
 
-            elif cat == "C6":                   # premise + the fix actually works
-                if qid not in C6:
-                    raise KeyError(f"no C6 expectation for id {qid} — add one to C6")
-                spec = C6[qid]
-                start, end, new_lines = spec["fix"]
+    def test_loop_in_function_rejected(self):
+        with self.assertRaises(ValueError):
+            self.f("def r():\n    a=0\n    for x in [1,2]:\n        a=a+x\n", "a", 1)
 
-                _, buggy_err, _ = run(q["code"])              # 1. error premise
-                fixed = apply_line_fix(q["code"], start, end, new_lines)
-                fixed_out, fixed_err, _ = run(fixed)          # 2. fix works + right answer
+    def test_single_line_body_rejected(self):
+        with self.assertRaises(ValueError):
+            self.f("acc=0\nfor x in [1,2]: acc=acc+x\n", "acc", 1)
 
-                premise_ok = buggy_err == spec["raises"]
-                fix_ok = fixed_err is None and fixed_out == spec["expect"]
-
-                # 3. for a single-line replacement, the fix text must appear in the
-                #    marked-correct option (ties the working fix to the option).
-                single_line = start == end and len(new_lines) == 1
-                if single_line:
-                    xref_ok = new_lines[0].strip() in q["options"][q["correct_index"]]
-                    note = "premise+fix+option"
-                else:
-                    xref_ok = True                            # prose fix: not text-checkable
-                    note = "premise+fix (option text not machine-checked)"
-
-                ok = premise_ok and fix_ok and xref_ok
-                if not premise_ok:
-                    computed = f"buggy raised {buggy_err}"
-                elif not fix_ok:
-                    computed = f"fixed -> {fixed_err or fixed_out!r}"
-                elif not xref_ok:
-                    computed = "fix text not found in correct option"
-                else:
-                    computed = f"raises {buggy_err}, fixed -> {spec['expect']}"
-                record(qid, cat, "assist", ok, computed, spec["expect"], note)
-
-            elif cat == "C7":                   # verify effect of the one-line change
-                if qid not in C7_CHANGE:
-                    raise KeyError(f"no C7 expectation for id {qid} — add one to C7_CHANGE")
-                lineno, repl, want = C7_CHANGE[qid]
-                got = c7_effect(q["code"], lineno, repl)
-                record(qid, cat, "assist", got == want, got, want, f"line {lineno}")
-
-            elif cat == "C2":                   # verify the statement's premise
-                ok, note = c2_predicate(qid, q["code"])
-                if ok is None:
-                    raise KeyError(f"no C2 predicate for id {qid} — add one to c2_predicate")
-                record(qid, cat, "assist", bool(ok), note, "true-statement holds")
-
-            else:                               # unknown / typo'd category
-                raise ValueError(f"unknown category {cat!r}")
-
-        except Exception as e:                  # noqa: BLE001 — turn any fault into a failed check
-            record(qid, cat, "error", False, f"<{type(e).__name__}: {e}>", "—")
-
-    # A check must exist for every question. If counts diverge, something was
-    # skipped — never let that pass as green.
-    checked_ids = {r[0] for r in results}
-    all_ids = {q.get("id", "?") for q in questions}
-    missing = all_ids - checked_ids
-    coverage_ok = (len(results) == len(questions)) and not missing
-    return results, coverage_ok, missing
-
-
-def main(path=QUESTIONS_PATH):
-    with open(path, encoding="utf-8") as f:
-        questions = json.load(f)["questions"]
-    results, coverage_ok, missing = evaluate(questions)
-
-    print("=" * 78)
-    print(f"{'ID':>4} {'CAT':<4} {'TIER':<7} {'OK':<4} computed  vs  expected   | note")
-    print("=" * 78)
-    n_fail = 0
-    for qid, cat, tier, ok, comp, exp, note in results:
-        flag = "OK " if ok else "XX "
-        if not ok:
-            n_fail += 1
-        print(f"{qid:>4} {cat:<4} {tier:<7} {flag} {str(comp)!r:>20} vs "
-              f"{str(exp)!r:<14} | {note}")
-    print("=" * 78)
-    mech = sum(1 for r in results if r[2] == "mech")
-    assist = sum(1 for r in results if r[2] == "assist")
-    print(f"TOTAL: {len(results)} checks ({mech} mechanical, {assist} assisted), "
-          f"{n_fail} mismatches")
-    if not coverage_ok:
-        print(f"COVERAGE FAILURE: {len(questions)} questions but {len(results)} "
-              f"checks; missing ids: {sorted(missing)}")
-    return 1 if (n_fail or not coverage_ok) else 0
+    def test_iteration_beyond_loop_rejected(self):
+        with self.assertRaises(ValueError):
+            self.f("acc=0\nfor x in [1,2]:\n    acc=acc+x\n", "acc", 5)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    unittest.main(verbosity=2)

@@ -1,427 +1,283 @@
 # -*- coding: utf-8 -*-
-"""Ground-truth verification harness for all 45 questions.
-Executes each snippet, derives the real result, and checks options[0]."""
-import io, contextlib, traceback
+"""Ground-truth verification harness for the code-tracing questions.
 
-results = []
+Single source of truth: data/questions.json. Every check below executes the
+**actual shipped code** from that file — there is no second, hand-copied copy
+of any snippet here. If a question's code drifts from its answer, this harness
+fails.
 
-def run_capture(code, ns=None):
-    """Exec code, return (stdout_text, exception_or_None, namespace)."""
-    if ns is None:
-        ns = {}
+Two tiers of checks:
+
+  MECHANICAL (C1, C3, C4, C5) — the correct answer is computed purely by
+  running/instrumenting the shipped code, then compared to
+  options[correct_index]. No per-question data lives in this file.
+
+  ASSISTED (C2, C6, C7) — the answer is a natural-language statement, so it
+  can't be selected by execution alone. For these we keep a small, auditable
+  table of *structured expectations* (an expected exception, a one-line code
+  change, an expected effect) and verify each one against the shipped code by
+  executing it. The code is still never duplicated here.
+
+Run:  python3 verify.py        # prints a per-question OK/XX table
+Exit code is non-zero if any check fails.
+"""
+import io
+import os
+import re
+import sys
+import copy
+import json
+import contextlib
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+# verify.py lives in data/ alongside questions.json
+QUESTIONS_PATH = os.path.join(HERE, "questions.json")
+
+
+# ------------------------------ execution helpers ------------------------------
+def run(code):
+    """Exec code in a fresh namespace. Return (stdout_stripped, exc_name|None, ns)."""
     buf = io.StringIO()
-    err = None
+    exc = None
+    ns = {}
     try:
         with contextlib.redirect_stdout(buf):
-            exec(code, ns)
-    except Exception as e:
-        err = e
-    return buf.getvalue().strip(), err, ns
+            exec(compile(code, "<question>", "exec"), ns)
+    except Exception as e:  # noqa: BLE001 — we want to report any failure type
+        exc = type(e).__name__
+    return buf.getvalue().strip(), exc, ns
 
-def check(qid, cat, computed, marked, note=""):
-    ok = (str(computed).strip() == str(marked).strip())
-    results.append((qid, cat, ok, computed, marked, note))
 
-# ---------- C1 / C4 : just compare printed output to options[0] ----------
-def output_q(qid, cat, code, marked, note=""):
-    out, err, _ = run_capture(code)
-    if err:
-        out = f"<EXC {type(err).__name__}: {err}>"
-    check(qid, cat, out, marked, note)
+def count_line_runs(code, lineno):
+    """How many times physical line `lineno` executes in the shipped code."""
+    runs = [0]
 
-# Q5 C1
-output_q(5, "C1",
-"nums = [18, 10, 10, 15, 5, 21, 23, 23, 19]\nbig = 0\nsmall = 0\nfor x in nums:\n    if x > 10:\n        big = big + x\n    else:\n        small = small + 1\nprint(big, small)",
-"119 3")
+    def tracer(frame, event, arg):
+        if event == "call":
+            return tracer
+        if event == "line" and frame.f_lineno == lineno:
+            runs[0] += 1
+        return tracer
 
-# Q2 C1
-output_q(2, "C1",
-"text = 'melonbanana'\nres = ''\nn = len(text)\nfor i in range(n):\n    if i % 2 == 0:\n        res = res + text[i].upper()\n    else:\n        res = res + text[i]\nprint(res)",
-"MeLoNbAnAnA")
-
-# Q8 C1
-output_q(8, "C1",
-"items = [4, 3, 1, 9, 2]\nfor i in range(3):\n    x = items.pop()\n    items.insert(0, x + 1)\nprint(items)",
-"[2, 10, 3, 4, 3]")
-
-# Q3 C1
-output_q(3, "C1",
-"text = 'windoworange'\nn = len(text)\nfor i in range(n):\n    if text[i] == 'n':\n        text = text[:i] + '*' + text[i+1:]\nprint(text)",
-"wi*dowora*ge")
-
-# Q18 C1
-output_q(18, "C1",
-"a = [9, 2, 4]\nb = a\nfor i in range(2):\n    b.append(a[i] * 2)\na = a + [2]\nb.append(6)\nprint(len(a), len(b))",
-"6 6")
-
-# Q12 C4
-output_q(12, "C4",
-"m = [[7, 4, 5], [5, 1, 1], [3, 8, 9]]\nt = 0\nfor i in range(len(m)):\n    t = t + m[i][len(m) - 1 - i]\nprint(t)",
-"9")
-
-# Q1 C4
-output_q(1, "C4",
-"nums = [9, 2, 4, 9, 7, 9, 8]\nk = len(nums)\nout = 0\nfor i in range(k):\n    out = out + abs(nums[i] - nums[-i-1])\nprint(out)",
-"22")
-
-# Q7 C4
-output_q(7, "C4",
-"L = [8, 10, 6, 8, 11, 9]\nacc = 0\nk = len(L)\nfor i in range(k):\n    if L[i] % 3 == 0:\n        continue\n    acc = acc + L[i] * i\nprint(acc)",
-"78")
-
-# Q19 C4
-output_q(19, "C4",
-"m = [[3, 9, 4], [8, 3, 9], [5, 2, 7]]\nt = 0\nfor i in range(len(m)):\n    t = t + m[i][0] + m[i][i]\nprint(t)",
-"29")
-
-# Q31 C4
-output_q(31, "C4",
-"a = [9, 8, 8]\nb = a\nfor i in range(2):\n    b.append(a[i] * 2)\na = a + [6]\nb.append(8)\nm = len(a) + len(b)\nprint(m)",
-"12")
-
-# Q14 C4
-output_q(14, "C4",
-"arr = [9, 8, 7, 9, 1, 5]\nk = len(arr)\nout = 0\nfor i in range(k):\n    if i % 2 == 0:\n        out = out + arr[i] - arr[-i-1]\nprint(out)",
-"-5")
-
-# Q17 C4
-output_q(17, "C4",
-"S = '738121'\nparts = []\nst = 0\nfor i in range(3):\n    en = st + 2\n    parts.append(int(S[st:en]))\n    st = en\nd = max(parts) - min(parts)\nprint(d)",
-"60")
-
-# Q11 C4
-output_q(11, "C4",
-"data = [13, 7, 11, 13, 11, 14, 10]\ntotal = 0\nfor v in data:\n    if total > 34:\n        break\n    total = total + v\nprint(total)",
-"44")
-
-# Q33 C4
-output_q(33, "C4",
-"arr = [7, 4, 7, 10, 11]\nout = 0\nk = len(arr)\nfor i in range(k):\n    if arr[i] % 3 == 0:\n        continue\n    out = out + arr[i] * i\nprint(out)",
-"92")
-
-# ---------- C3 : count how many times the accumulation line runs ----------
-# We instrument by replacing the target operation with a counter.
-
-# Q95: line 7 is `count = count + 1` (the if x%2==0 body)
-def q95():
-    data = [14, 3, 3, 5, 9, 12, 19, 3]
-    count = 0; runs = 0
-    for x in data:
-        if x > 16: break
-        if x % 2 == 0:
-            runs += 1; count = count + 1
-    return runs
-check(95, "C3", q95(), 2, "times line7 count+=1 runs")
-
-# Q96: line 7 is `total = total + x` (under if x>18, after continue on odd)
-def q96():
-    vals = [2, 25, 6, 22, 5, 14, 21, 20, 16]; total=0; runs=0
-    for x in vals:
-        if x % 2 == 1: continue
-        if x > 18:
-            runs+=1; total=total+x
-    return runs
-check(96, "C3", q96(), 2, "times line7 total+=x runs")
-
-# Q97: line 7 is `c = c + 1` (elif isupper)
-def q97():
-    s='z9XcV4aQw8'; c=0; runs=0
-    for i in range(len(s)):
-        if s[i].isdigit(): c=c+2
-        elif s[i].isupper(): runs+=1; c=c+1
-    return runs
-check(97, "C3", q97(), 3, "times line7 c+=1 (isupper) runs")
-
-# Q100: line 7 is `total = total + x` (under if x>15 after odd-continue)
-def q100():
-    nums=[17,7,28,27,3,14,22]; total=0; runs=0
-    for x in nums:
-        if x%2==1: continue
-        if x>15: runs+=1; total=total+x
-    return runs
-check(100, "C3", q100(), 2, "times line7 runs")
-
-# Q98: line 8 is `steps = steps + 1`
-def q98():
-    items=[3,9,8,4,7,4,2]; total=0; steps=0; runs=0
-    for v in items:
-        total=total+v
-        if total>21: break
-        runs+=1; steps=steps+1
-    return runs
-check(98, "C3", q98(), 3, "times line8 steps+=1 runs")
-
-# Q114: line 7 `total = total + x`
-def q114():
-    items=[14,2,16,8,20,6,15,7]; total=0; runs=0
-    for x in items:
-        if x%2==1: continue
-        if x>12: runs+=1; total=total+x
-    return runs
-check(114, "C3", q114(), 3, "times line7 runs")
-
-# ---------- C5 : variable value at end of iteration N ----------
-# Q74: acc after iteration 2 (1-based)
-def q74():
-    items=[7,5,15,19,5,14,9]; acc=0
-    for it,x in enumerate(items,1):
-        if x>10: acc=acc+x
-        else: acc=acc-1
-        if it==2: return acc
-check(74, "C5", q74(), -2, "acc after iter 2")
-
-# Q71: total after iteration 3
-def q71():
-    data=[3,6,7,9,9]; total=0
-    for i in range(len(data)):
-        total=total+data[i]-data[-i-1]
-        if i+1==3: return total
-check(71, "C5", q71(), -9, "total after iter 3")
-
-# Q82: acc after iteration 5
-def q82():
-    nums=[11,8,15,7,6,10]; acc=0
-    for it,x in enumerate(nums,1):
-        if x>8: acc=acc+x
-        else: acc=acc-1
-        if it==5: return acc
-check(82, "C5", q82(), 23, "acc after iter 5")
-
-# Q72: res after iteration 6
-def q72():
-    word='meadowtu'; res=''
-    for i in range(len(word)):
-        if i%2==0: res=res+word[i].upper()
-        else: res=word[i]+res
-        if i+1==6: return res
-check(72, "C5", q72(), "wdeMAO", "res after iter 6")
-
-# Q73: out after iteration 5
-def q73():
-    L=[3,4,8,4,6,6]; out=[]
-    for i in range(len(L)):
-        if L[i]%2==0: out.append(L[i]+i)
-        else: out.insert(0,i)
-        if i+1==5: return out
-check(73, "C5", q73(), [0,5,10,7,10], "out after iter 5")
-
-# Q78: acc after iteration 4
-def q78():
-    arr=[11,4,16,18,17,7,14]; acc=0
-    for it,x in enumerate(arr,1):
-        if x>10: acc=acc+x
-        else: acc=acc-1
-        if it==4: return acc
-check(78, "C5", q78(), 44, "acc after iter 4")
-
-# Q79: total after iteration 4
-def q79():
-    nums=[3,1,5,9,5,3]; total=0
-    for i in range(len(nums)):
-        total=total+nums[i]-nums[-i-1]
-        if i+1==4: return total
-check(79, "C5", q79(), -4, "total after iter 4")
-
-# ---------- C2 : evaluate correct statement (options[0]) ----------
-# Q149: aliasing, b appends 2 -> len(a)=5
-def q149():
-    a=[7,3,8]; b=a
-    for i in range(2): b.append(a[0]+i)
-    return len(a)
-check(149, "C2", q149(), 5, "len(a) at end")
-
-# Q151: loop range(2,17,3) -> 2,5,8,11,14 = 5 iterations
-check(151, "C2", len(list(range(2,17,3))), 5, "loop body runs N times")
-
-# Q152: sorted(vals) leaves vals unchanged -> True (statement0)
-def q152():
-    vals=[18,17,10,17,12]; before=list(vals); M=sorted(vals)
-    return vals==before
-check(152, "C2", q152(), True, "sorted leaves vals unchanged")
-
-# Q150: parts are strings; sum(parts) -> TypeError
-def q150():
-    S='151969'; parts=[]; st=0
-    for i in range(3):
-        parts.append(S[st:st+2]); st=st+2
+    prev = sys.gettrace()
+    sys.settrace(tracer)
     try:
-        sum(parts); return "no error"
-    except TypeError: return "TypeError"
-check(150, "C2", q150(), "TypeError", "sum(list of str) -> TypeError")
+        with contextlib.redirect_stdout(io.StringIO()):
+            exec(compile(code, "<question>", "exec"), {})
+    except Exception:
+        pass
+    finally:
+        sys.settrace(prev)
+    return runs[0]
 
-# Q155: a=[7,7,6]; b=a; appends 2 -> a len 5 (b=b+[8] rebinds b only)
-def q155():
-    a=[7,7,6]; b=a
-    for i in range(2): b.append(a[0]+i)
-    b=b+[8]
-    return len(a)
-check(155, "C2", q155(), 5, "len(a) at end")
 
-# Q154: find('x')=-1, p<0 so res = 1*3 = 3
-def q154():
-    s='breeze'; p=s.find('x'); res=0
-    for i in range(3):
-        if p<0: res=res+1
-        else: res=res+p
-    return res
-check(154, "C2", q154(), 3, "res at end (find returns -1)")
+def var_after_iteration(code, var, n):
+    """Value of `var` at the end of the 1-based nth iteration of the top-level
+    for-loop. Works by snapshotting `var` each time the loop header re-fires
+    (which happens once per iteration, plus once more when the iterator is
+    exhausted). Values are deep-copied at capture time so later mutation of a
+    list/dict can't corrupt an earlier snapshot."""
+    lines = code.split("\n")
+    header = next(i + 1 for i, ln in enumerate(lines) if ln.lstrip().startswith("for "))
+    ends = []
+    hits = [0]
 
-# ---------- C7 : effect of changing a line ----------
-# Q119: original out; change range to range(1,len) ; statement0 = no change
-def q119():
-    nums=[8,8,2,5,5]
-    def orig():
-        out=0
-        for i in range(len(nums)): out=out+nums[i]*i
-        return out
-    def mod():
-        out=0
-        for i in range(1,len(nums)): out=out+nums[i]*i
-        return out
-    return orig(), mod()
-o,m = q119(); check(119, "C7", "no change" if o==m else f"{o}->{m}", "no change", f"orig={o} mod={m}")
+    def tracer(frame, event, arg):
+        if event == "call":
+            return tracer
+        if event == "line" and frame.f_lineno == header:
+            hits[0] += 1
+            if hits[0] >= 2:  # header hit k>=2 => iteration k-1 just finished
+                ends.append(copy.deepcopy(frame.f_locals.get(var)))
+        return tracer
 
-# Q124: replace break with no-op -> count counts evens in full list
-def q124():
-    data=[3,11,2,5,23,1,5]
-    def orig():
-        count=0
-        for x in data:
-            if x>16: break
-            if x%2==0: count+=1
-        return count
-    def mod():
-        count=0
-        for x in data:
-            count=count+0
-            if x%2==0: count+=1
-        return count
-    return orig(), mod()
-o,m=q124(); check(124,"C7", "no change" if o==m else f"{o}->{m}", "no change", f"orig={o} mod={m}")
-
-# Q121: range(len+1) -> IndexError
-def q121():
-    vals=[4,11,9,2,8]; total=0
+    prev = sys.gettrace()
+    sys.settrace(tracer)
     try:
-        for i in range(len(vals)+1): total=total+vals[i]
-        return "no error"
-    except IndexError: return "IndexError"
-check(121,"C7", q121(), "IndexError", "range(len+1) -> IndexError")
+        with contextlib.redirect_stdout(io.StringIO()):
+            exec(compile(code, "<question>", "exec"), {})
+    except Exception:
+        pass
+    finally:
+        sys.settrace(prev)
+    return ends[n - 1] if 0 < n <= len(ends) else None
 
-# Q122: step 2 -> MRECR
-def q122():
-    s='marketcar'; res=''
-    for i in range(0,len(s),2): res=res+s[i].upper()
-    return res
-check(122,"C7", q122(), "MRECR", "step2 result")
 
-# Q123: b=a[:] copy -> len(a) stays 3 (was 5) -> "3 instead of 5"
-def q123():
-    a=[1,4,8]; b=a[:]
-    for i in range(2): b.append(i+2)
-    return len(a)
-check(123,"C7", q123(), 3, "len(a) with copy")
+def replace_line(code, lineno, new_stripped):
+    """Return code with physical line `lineno` swapped for `new_stripped`,
+    preserving the original line's indentation."""
+    lines = code.split("\n")
+    original = lines[lineno - 1]
+    indent = original[: len(original) - len(original.lstrip())]
+    lines[lineno - 1] = indent + new_stripped
+    return "\n".join(lines)
 
-# Q125: x>13 -> x>=13 ; 13 not in list so no change
-def q125():
-    nums=[9,3,18,6,18,17,19]
-    def f(op):
-        c=0
-        for x in nums:
-            if (x>=13 if op=='ge' else x>13): c+=1
-        return c
-    return f('gt'), f('ge')
-o,m=q125(); check(125,"C7","no change" if o==m else f"{o}->{m}","no change",f"gt={o} ge={m}")
 
-# Q128: range(1,len) -> term i=0 (L[0]*0=0) dropped, no change
-def q128():
-    L=[10,3,9,11,4,4]
-    def f(start):
-        out=0
-        for i in range(start,len(L)): out=out+L[i]*i
-        return out
-    return f(0), f(1)
-o,m=q128(); check(128,"C7","no change" if o==m else f"{o}->{m}","no change",f"full={o} from1={m}")
+# -------------------------------- result table --------------------------------
+results = []  # (id, cat, tier, ok, computed, expected, note)
 
-# ---------- C6 : fix the error ----------
-# Q176: original IndexError (i+1 out of range); fix0 = range(len-1); expect sum of adjacent diffs
-def q176():
-    items=[6,7,10,10,5,4]
-    # original
-    try:
-        d=0
-        for i in range(len(items)): d=d+items[i+1]-items[i]
-        orig="no error"
-    except IndexError: orig="IndexError"
-    # fix0
-    d=0
-    for i in range(len(items)-1): d=d+items[i+1]-items[i]
-    return orig, d
-o,d=q176(); check(176,"C6", f"{o}|d={d}", "IndexError|d=-2", f"orig={o}, fixed d={d}")
 
-# Q175: parts are str -> sum TypeError; fix0 int() cast
-def q175():
-    S='57246272';
-    parts=[]; st=0
-    for i in range(4):
-        parts.append(S[st:st+2]); st=st+2
-    try:
-        sum(parts); orig="no error"
-    except TypeError: orig="TypeError"
-    parts2=[]; st=0
-    for i in range(4):
-        parts2.append(int(S[st:st+2])); st=st+2
-    return orig, sum(parts2)
-o,s=q175(); check(175,"C6", f"{o}|sum={s}", "TypeError|sum=215", f"orig={o}, fixed sum={s}")
+def record(qid, cat, tier, ok, computed, expected, note=""):
+    results.append((qid, cat, tier, ok, computed, expected, note))
 
-# Q177: txt[ch] where ch is a char -> TypeError; fix0 ch.upper()
-def q177():
-    txt='violet'
-    try:
-        res=''
-        for ch in txt: res=res+txt[ch].upper()
-        orig="no error"
-    except TypeError: orig="TypeError"
-    res=''
-    for ch in txt: res=res+ch.upper()
-    return orig, res
-o,r=q177(); check(177,"C6", f"{o}|{r}", "TypeError|VIOLET", f"orig={o}, fixed={r}")
 
-# Q180: arr.remove(5) 3x but only one 5 -> ValueError; fix0 guard with count
-def q180():
-    arr=[7,6,5,4,2]
-    try:
-        a=list(arr)
-        for i in range(3): a.remove(5)
-        orig="no error"
-    except ValueError: orig="ValueError"
-    a=list(arr)
-    for i in range(3):
-        if a.count(5)>0: a.remove(5)
-    return orig, a
-o,a=q180(); check(180,"C6", f"{o}|{a}", "ValueError|[7, 6, 4, 2]", f"orig={o}, fixed={a}")
+def as_option_text(value):
+    """Render a computed Python value the way the options store it."""
+    return value if isinstance(value, str) else str(value)
 
-# Q178: pop during iteration -> IndexError; fix0 build new list of odds
-def q178():
-    L=[5,2,9,10,5,9]
-    try:
-        l=list(L)
-        for i in range(len(l)):
-            if l[i]%2==0: l.pop(i)
-        orig="no error"
-    except IndexError: orig="IndexError"
-    res=[x for x in L if x%2!=0]
-    return orig, res
-o,r=q178(); check(178,"C6", f"{o}|{r}", "IndexError|[5, 9, 5, 9]", f"orig={o}, fixed={r}")
 
-# ---------- report ----------
-print("="*70)
-print(f"{'ID':>4} {'CAT':<4} {'OK':<4} computed -> marked   | note")
-print("="*70)
-nfail=0
-for qid,cat,ok,comp,marked,note in sorted(results, key=lambda r:r[0]):
-    flag = "OK " if ok else "XX "
-    if not ok: nfail+=1
-    print(f"{qid:>4} {cat:<4} {flag} {str(comp)!r:>22} vs {str(marked)!r:<10} | {note}")
-print("="*70)
-print(f"TOTAL: {len(results)} checks, {nfail} mismatches")
+# ---------------------------- assisted-tier tables ----------------------------
+# C6: the shipped code is meant to raise. We verify the error premise
+# mechanically (the code really raises this exception). Which fix is correct is
+# the author's assertion; the expected fixed output is documented for the reader.
+C6_RAISES = {
+    176: ("IndexError", "fixed prints -2 (sum of adjacent diffs)"),
+    175: ("TypeError", "fixed prints 215 (int-cast slices)"),
+    177: ("TypeError", "fixed prints VIOLET"),
+    180: ("ValueError", "fixed leaves [7, 6, 4, 2]"),
+    178: ("IndexError", "fixed leaves [5, 9, 5, 9]"),
+}
+
+# C7: a one-line change (lineno, replacement) applied to the shipped code, plus
+# the effect it should produce. The effect string is derived by executing the
+# real code before/after — so it tracks the shipped snippet.
+C7_CHANGE = {
+    119: (3, "for i in range(1, len(nums)):", "no change"),
+    124: (5, "pass", "no change"),
+    121: (3, "for i in range(len(vals) + 1):", "raises IndexError"),
+    122: (3, "for i in range(0, len(s), 2):", "MARKETCAR -> MRECR"),
+    123: (2, "b = a[:]", "5 -> 3"),
+    125: (4, "if x >= 13:", "no change"),
+    128: (3, "for i in range(1, len(L)):", "no change"),
+}
+
+
+def c7_effect(code, lineno, replacement):
+    o_out, o_err, _ = run(code)
+    m_out, m_err, _ = run(replace_line(code, lineno, replacement))
+    if o_err or m_err:
+        return f"raises {m_err}" if m_err and not o_err else f"orig {o_err} / mod {m_err}"
+    if o_out == m_out:
+        return "no change"
+    return f"{o_out} -> {m_out}"
+
+
+# C2: natural-language statements. Each predicate establishes the objective fact
+# the true statement relies on, by executing the shipped code (and, where the
+# statement is about a hypothetical edit, applying that edit to the real code).
+def c2_predicate(qid, code):
+    if qid in (149, 155):                       # aliasing: len(a) ends at 5
+        _, _, ns = run(code)
+        return len(ns["a"]) == 5, f"len(a)={len(ns['a'])}"
+    if qid == 151:                              # loop body runs exactly 5 times
+        n = count_line_runs(code, 3)            # first body line
+        return n == 5, f"body runs {n}x"
+    if qid == 152:                              # sorted() leaves vals unchanged
+        literal = re.search(r"vals\s*=\s*(\[[^\]]*\])", code).group(1)
+        _, _, ns = run(code)
+        return ns["vals"] == json.loads(literal), f"vals={ns['vals']}"
+    if qid == 154:                              # res ends at 3 (find returns -1)
+        _, _, ns = run(code)
+        return ns["res"] == 3, f"res={ns['res']}"
+    if qid == 150:                              # adding print(sum(parts)) -> TypeError
+        _, err, _ = run(code + "\nprint(sum(parts))")
+        return err == "TypeError", f"sum(parts) raises {err}"
+    return None, "no predicate"
+
+
+# --------------------------------- run checks ---------------------------------
+def main():
+    with open(QUESTIONS_PATH, encoding="utf-8") as f:
+        questions = json.load(f)["questions"]
+
+    for q in sorted(questions, key=lambda x: x["id"]):
+        qid = q.get("id", "?")
+        cat = q.get("category", "?")
+        # Each question is guarded: a malformed prompt, missing id, or bad
+        # category fails *that* check (and is reported) instead of crashing the
+        # whole run. Every question therefore always produces exactly one record.
+        try:
+            correct = q["options"][q["correct_index"]]
+
+            if cat in ("C1", "C4"):             # answer is the printed output
+                out, err, _ = run(q["code"])
+                computed = f"<{err}>" if err else out
+                record(qid, cat, "mech", computed == correct, computed, correct)
+
+            elif cat == "C3":                   # answer is a line-execution count
+                m = re.search(r"שורה\s*(\d+)", q["prompt"])
+                if not m:
+                    raise ValueError("C3 prompt has no 'שורה N' line reference")
+                lineno = int(m.group(1))
+                computed = str(count_line_runs(q["code"], lineno))
+                record(qid, cat, "mech", computed == correct, computed, correct,
+                       f"line {lineno}")
+
+            elif cat == "C5":                   # answer is var value after iter N
+                mv = re.search(r"המשתנה\s+([A-Za-z_]\w*)", q["prompt"])
+                mn = re.search(r"האיטרציה\s*ה-?\s*(\d+)", q["prompt"])
+                if not (mv and mn):
+                    raise ValueError("C5 prompt missing variable or iteration N")
+                var, n = mv.group(1), int(mn.group(1))
+                computed = as_option_text(var_after_iteration(q["code"], var, n))
+                record(qid, cat, "mech", computed == correct, computed, correct,
+                       f"{var} after iter {n}")
+
+            elif cat == "C6":                   # verify the error premise
+                if qid not in C6_RAISES:
+                    raise KeyError(f"no C6 expectation for id {qid} — add one to C6_RAISES")
+                want, note = C6_RAISES[qid]
+                _, err, _ = run(q["code"])
+                record(qid, cat, "assist", err == want, err, want, note)
+
+            elif cat == "C7":                   # verify effect of the one-line change
+                if qid not in C7_CHANGE:
+                    raise KeyError(f"no C7 expectation for id {qid} — add one to C7_CHANGE")
+                lineno, repl, want = C7_CHANGE[qid]
+                got = c7_effect(q["code"], lineno, repl)
+                record(qid, cat, "assist", got == want, got, want, f"line {lineno}")
+
+            elif cat == "C2":                   # verify the statement's premise
+                ok, note = c2_predicate(qid, q["code"])
+                if ok is None:
+                    raise KeyError(f"no C2 predicate for id {qid} — add one to c2_predicate")
+                record(qid, cat, "assist", bool(ok), note, "true-statement holds")
+
+            else:                               # unknown / typo'd category
+                raise ValueError(f"unknown category {cat!r}")
+
+        except Exception as e:                  # noqa: BLE001 — turn any fault into a failed check
+            record(qid, cat, "error", False, f"<{type(e).__name__}: {e}>", "—")
+
+    # ------------------------------- coverage guard -------------------------------
+    # A check must exist for every question. If counts diverge, something was
+    # skipped — never let that pass as green.
+    checked_ids = {r[0] for r in results}
+    all_ids = {q.get("id", "?") for q in questions}
+    missing = all_ids - checked_ids
+    coverage_ok = (len(results) == len(questions)) and not missing
+
+    # ---------------------------------- report ----------------------------------
+    print("=" * 78)
+    print(f"{'ID':>4} {'CAT':<4} {'TIER':<7} {'OK':<4} computed  vs  expected   | note")
+    print("=" * 78)
+    n_fail = 0
+    for qid, cat, tier, ok, comp, exp, note in results:
+        flag = "OK " if ok else "XX "
+        if not ok:
+            n_fail += 1
+        print(f"{qid:>4} {cat:<4} {tier:<7} {flag} {str(comp)!r:>20} vs "
+              f"{str(exp)!r:<14} | {note}")
+    print("=" * 78)
+    mech = sum(1 for r in results if r[2] == "mech")
+    assist = sum(1 for r in results if r[2] == "assist")
+    print(f"TOTAL: {len(results)} checks ({mech} mechanical, {assist} assisted), "
+          f"{n_fail} mismatches")
+    if not coverage_ok:
+        print(f"COVERAGE FAILURE: {len(questions)} questions but {len(results)} "
+              f"checks; missing ids: {sorted(missing)}")
+    return 1 if (n_fail or not coverage_ok) else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

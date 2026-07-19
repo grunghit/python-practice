@@ -104,25 +104,6 @@ and the modified/fixed code are executed to confirm the claimed effect.
 
 ---
 
-## Deploy to GitHub Pages
-
-1. Put the contents of `python-practice/` at the repo root (or in `/docs`).
-2. Push to GitHub.
-3. **Settings → Pages →** Source: *Deploy from a branch*; Branch: `main`,
-   folder `/ (root)` (or `/docs`).
-4. Open the published URL. Because it's fully static, no further configuration is
-   needed. (Served over `https://`, `fetch('./data/questions.json')` works, so the
-   inline fallback isn't used — but it remains as a safety net.)
-
-> If you edit `data/questions.json`, regenerate the offline fallback so the two
-> stay in sync:
-> ```bash
-> cd python-practice
-> python3 -c "import json; d=json.load(open('data/questions.json')); open('js/questions-data.js','w').write('window.__QUESTIONS_FALLBACK__ = '+json.dumps(d,ensure_ascii=False,indent=2)+';\n')"
-> ```
-
----
-
 ## Design
 
 "Calm code-editor" identity: page `#EEF1F6`, white cards, indigo primary

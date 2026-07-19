@@ -523,6 +523,12 @@ function onKeydown(e) {
     if (run.mode === 'exam' && run.index === run.items.length - 1) finishRun();
     else next();
   }
+  // 'R' reshuffles (matches the button tooltip). Require no modifiers so we
+  // never hijack Ctrl+R / Cmd+R (browser reload).
+  else if (e.key.toLowerCase() === 'r' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    e.preventDefault();
+    reshuffle();
+  }
 }
 
 /* ============================== theme ============================= */

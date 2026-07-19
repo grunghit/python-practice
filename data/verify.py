@@ -24,6 +24,7 @@ Exit code is non-zero if any check fails.
 import io
 import os
 import re
+import ast
 import sys
 import copy
 import json
@@ -72,23 +73,66 @@ def count_line_runs(code, lineno):
 
 
 def var_after_iteration(code, var, n):
-    """Value of `var` at the end of the 1-based nth iteration of the top-level
-    for-loop. Works by snapshotting `var` each time the loop header re-fires
-    (which happens once per iteration, plus once more when the iterator is
-    exhausted). Values are deep-copied at capture time so later mutation of a
-    list/dict can't corrupt an earlier snapshot."""
-    lines = code.split("\n")
-    header = next(i + 1 for i, ln in enumerate(lines) if ln.lstrip().startswith("for "))
+    """Value of `var` at the end of the 1-based nth iteration of the snippet's
+    single top-level loop.
+
+    Contract (asserted, not assumed):
+      * Exactly one loop at module top level — a `for` or a `while`. Nested
+        loops inside its body are allowed; two sequential top-level loops make
+        "iteration N" ambiguous and are rejected, as is a loop wrapped in a
+        function (not reached at module level) and a single-line loop body.
+      * The loop must actually run at least N iterations.
+    Any violation raises, so the harness reports the question as an error rather
+    than silently measuring the wrong loop or the wrong iteration.
+
+    Mechanics: we watch line events in the module frame and keep the most recent
+    value of `var` seen on a line *inside the loop body*. That pending value is
+    committed as "end of this iteration" the moment control leaves the body —
+    whether the loop header re-fires (next iteration / normal exhaustion) or
+    execution jumps past the loop (a `break`). This captures the break iteration
+    correctly, unlike counting header re-fires alone. Snapshots are deep-copied
+    so later mutation of a list/dict can't corrupt an earlier one; counting is
+    restricted to the module frame so nested calls can't interfere.
+    """
+    if n < 1:
+        raise ValueError(f"iteration number must be >= 1, got {n}")
+
+    top_loops = [node for node in ast.parse(code).body
+                 if isinstance(node, (ast.For, ast.While))]
+    if len(top_loops) != 1:
+        raise ValueError(
+            f"C5 needs exactly one top-level loop (for/while); found "
+            f"{len(top_loops)}. Nested loops are fine; two sibling loops or a "
+            f"loop inside a function are not supported."
+        )
+    loop = top_loops[0]
+    header = loop.lineno
+    # last body line — the loop's own body only (an `else:` clause is excluded,
+    # since its statements run after the loop, not within an iteration).
+    body_end = max(getattr(stmt, "end_lineno", stmt.lineno) for stmt in loop.body)
+    if body_end <= header:
+        raise ValueError("single-line loop body is not supported by the C5 harness")
+
     ends = []
-    hits = [0]
+    in_body = [False]
+
+    def capture(frame):
+        ends.append(copy.deepcopy(frame.f_locals.get(var)))
+        in_body[0] = False
 
     def tracer(frame, event, arg):
         if event == "call":
             return tracer
-        if event == "line" and frame.f_lineno == header:
-            hits[0] += 1
-            if hits[0] >= 2:  # header hit k>=2 => iteration k-1 just finished
-                ends.append(copy.deepcopy(frame.f_locals.get(var)))
+        if frame.f_code.co_name != "<module>":
+            return tracer
+        if event == "line":
+            ln = frame.f_lineno
+            if header < ln <= body_end:      # executing a line inside the body
+                in_body[0] = True
+            elif in_body[0]:                 # first line after the body ran:
+                capture(frame)               # header re-fire, or the line past a break
+        elif event == "return" and in_body[0]:
+            capture(frame)                   # loop was the last statement (break, no trailing line)
         return tracer
 
     prev = sys.gettrace()
@@ -100,7 +144,13 @@ def var_after_iteration(code, var, n):
         pass
     finally:
         sys.settrace(prev)
-    return ends[n - 1] if 0 < n <= len(ends) else None
+
+    if n > len(ends):
+        raise ValueError(
+            f"loop completed only {len(ends)} iteration(s); cannot read the "
+            f"value after iteration {n}"
+        )
+    return ends[n - 1]
 
 
 def replace_line(code, lineno, new_stripped):
@@ -205,17 +255,20 @@ def main():
                 record(qid, cat, "mech", computed == correct, computed, correct)
 
             elif cat == "C3":                   # answer is a line-execution count
-                if "trace_line" not in q:
-                  raise KeyError(f"C3 id {q['id']} missing 'trace_line'")
-                lineno = q["trace_line"]
+                m = re.search(r"שורה\s*(\d+)", q["prompt"])
+                if not m:
+                    raise ValueError("C3 prompt has no 'שורה N' line reference")
+                lineno = int(m.group(1))
                 computed = str(count_line_runs(q["code"], lineno))
                 record(qid, cat, "mech", computed == correct, computed, correct,
                        f"line {lineno}")
 
             elif cat == "C5":                   # answer is var value after iter N
-                if "trace_var" not in q or "trace_iter" not in q:
-                  raise KeyError(f"C5 id {q['id']} missing 'trace_var'/'trace_iter'")
-                var, n = q["trace_var"], q["trace_iter"]
+                mv = re.search(r"המשתנה\s+([A-Za-z_]\w*)", q["prompt"])
+                mn = re.search(r"האיטרציה\s*ה-?\s*(\d+)", q["prompt"])
+                if not (mv and mn):
+                    raise ValueError("C5 prompt missing variable or iteration N")
+                var, n = mv.group(1), int(mn.group(1))
                 computed = as_option_text(var_after_iteration(q["code"], var, n))
                 record(qid, cat, "mech", computed == correct, computed, correct,
                        f"{var} after iter {n}")

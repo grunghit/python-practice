@@ -292,7 +292,9 @@ function renderQuestion() {
   el.statScore.textContent = run.mode === 'exam'
     ? `נענו ${answered}/${total}`
     : `${correct} נכון · ${answered} נענו · ${total} סה"כ`;
-  const pct = Math.round((run.index) / total * 100);
+  // Progress = how much is answered (complements the "Question X of N" label,
+  // stays monotonic when navigating back, and reaches 100% only when done).
+  const pct = Math.round(answered / total * 100);
   el.progressFill.style.width = pct + '%';
   el.progressBar.setAttribute('aria-valuenow', String(pct));
 

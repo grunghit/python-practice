@@ -1,21 +1,23 @@
 name: verify
 
-# Enforces two invariants on every push and pull request:
-#   1. every question's answer is correct   (data/verify.py)
-#   2. the offline fallback is in sync       (build-fallback.py --check)
-# Both are pure-stdlib Python — no dependencies to install.
+# Enforces three invariants:
+#   1. the verifier's own tests pass       (data/test_verify.py)
+#   2. every question's answer is correct   (data/verify.py)
+#   3. the offline fallback is in sync       (build-fallback.py --check)
+# All pure-stdlib Python — no dependencies to install.
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.x"
 

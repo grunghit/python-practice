@@ -1,0 +1,29 @@
+name: verify
+
+# Enforces two invariants on every push and pull request:
+#   1. every question's answer is correct   (data/verify.py)
+#   2. the offline fallback is in sync       (build-fallback.py --check)
+# Both are pure-stdlib Python — no dependencies to install.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Test the verifier itself
+        run: python3 -m unittest discover -s data -p "test_*.py" -v
+
+      - name: Verify answers (execute every snippet)
+        run: python3 data/verify.py
+
+      - name: Verify offline fallback is in sync with questions.json
+        run: python3 build-fallback.py --check

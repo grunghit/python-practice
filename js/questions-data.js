@@ -77,6 +77,7 @@ window.__QUESTIONS_FALLBACK__ = {
       "difficulty": "קשה",
       "code": "data = [14, 3, 3, 5, 9, 12, 19, 3]\ncount = 0\nfor x in data:\n    if x > 16:\n        break\n    if x % 2 == 0:\n        count = count + 1\nprint(count)",
       "prompt": "כמה פעמים תתבצע הפעולה בשורה 7?",
+      "trace_line": 7,
       "options": [
         "2",
         "6",
@@ -93,6 +94,7 @@ window.__QUESTIONS_FALLBACK__ = {
       "difficulty": "קשה",
       "code": "vals = [2, 25, 6, 22, 5, 14, 21, 20, 16]\ntotal = 0\nfor x in vals:\n    if x % 2 == 1:\n        continue\n    if x > 18:\n        total = total + x\nprint(total)",
       "prompt": "כמה פעמים תתבצע הפעולה בשורה 7?",
+      "trace_line": 7,
       "options": [
         "2",
         "4",
@@ -157,6 +159,8 @@ window.__QUESTIONS_FALLBACK__ = {
       "difficulty": "קל",
       "code": "items = [7, 5, 15, 19, 5, 14, 9]\nacc = 0\nfor x in items:\n    if x > 10:\n        acc = acc + x\n    else:\n        acc = acc - 1\nprint(acc)",
       "prompt": "מה יהיה ערכו של המשתנה acc בתום האיטרציה ה-2?",
+      "trace_var": "acc",
+      "trace_iter": 2,
       "options": [
         "-2",
         "-1",
@@ -173,6 +177,8 @@ window.__QUESTIONS_FALLBACK__ = {
       "difficulty": "בינוני",
       "code": "data = [3, 6, 7, 9, 9]\ntotal = 0\nfor i in range(len(data)):\n    total = total + data[i] - data[-i-1]\nprint(total)",
       "prompt": "מה יהיה ערכו של המשתנה total בתום האיטרציה ה-3?",
+      "trace_var": "total",
+      "trace_iter": 3,
       "options": [
         "-9",
         "-6",
@@ -317,6 +323,7 @@ window.__QUESTIONS_FALLBACK__ = {
       "difficulty": "בינוני",
       "code": "s = 'z9XcV4aQw8'\nc = 0\nfor i in range(len(s)):\n    if s[i].isdigit():\n        c = c + 2\n    elif s[i].isupper():\n        c = c + 1\nprint(c)",
       "prompt": "כמה פעמים תתבצע הפעולה בשורה 7?",
+      "trace_line": 7,
       "options": [
         "3",
         "4",
@@ -333,6 +340,7 @@ window.__QUESTIONS_FALLBACK__ = {
       "difficulty": "קשה",
       "code": "nums = [17, 7, 28, 27, 3, 14, 22]\ntotal = 0\nfor x in nums:\n    if x % 2 == 1:\n        continue\n    if x > 15:\n        total = total + x\nprint(total)",
       "prompt": "כמה פעמים תתבצע הפעולה בשורה 7?",
+      "trace_line": 7,
       "options": [
         "2",
         "4",
@@ -397,6 +405,8 @@ window.__QUESTIONS_FALLBACK__ = {
       "difficulty": "קל",
       "code": "nums = [11, 8, 15, 7, 6, 10]\nacc = 0\nfor x in nums:\n    if x > 8:\n        acc = acc + x\n    else:\n        acc = acc - 1\nprint(acc)",
       "prompt": "מה יהיה ערכו של המשתנה acc בתום האיטרציה ה-5?",
+      "trace_var": "acc",
+      "trace_iter": 5,
       "options": [
         "23",
         "24",
@@ -413,6 +423,8 @@ window.__QUESTIONS_FALLBACK__ = {
       "difficulty": "בינוני",
       "code": "word = 'meadowtu'\nres = ''\nfor i in range(len(word)):\n    if i % 2 == 0:\n        res = res + word[i].upper()\n    else:\n        res = word[i] + res\nprint(res)",
       "prompt": "מה יהיה ערכו של המשתנה res בתום האיטרציה ה-6?",
+      "trace_var": "res",
+      "trace_iter": 6,
       "options": [
         "wdeMAO",
         "deMAO",
@@ -429,6 +441,8 @@ window.__QUESTIONS_FALLBACK__ = {
       "difficulty": "בינוני",
       "code": "L = [3, 4, 8, 4, 6, 6]\nout = []\nfor i in range(len(L)):\n    if L[i] % 2 == 0:\n        out.append(L[i] + i)\n    else:\n        out.insert(0, i)\nprint(out)",
       "prompt": "מה יהיה ערכו של המשתנה out בתום האיטרציה ה-5?",
+      "trace_var": "out",
+      "trace_iter": 5,
       "options": [
         "[0, 5, 10, 7, 10]",
         "[0, 5, 10, 7]",
@@ -541,6 +555,7 @@ window.__QUESTIONS_FALLBACK__ = {
       "difficulty": "בינוני",
       "code": "items = [3, 9, 8, 4, 7, 4, 2]\ntotal = 0\nsteps = 0\nfor v in items:\n    total = total + v\n    if total > 21:\n        break\n    steps = steps + 1\nprint(steps)",
       "prompt": "כמה פעמים תתבצע הפעולה בשורה 8?",
+      "trace_line": 8,
       "options": [
         "3",
         "4",
@@ -557,6 +572,7 @@ window.__QUESTIONS_FALLBACK__ = {
       "difficulty": "קשה",
       "code": "items = [14, 2, 16, 8, 20, 6, 15, 7]\ntotal = 0\nfor x in items:\n    if x % 2 == 1:\n        continue\n    if x > 12:\n        total = total + x\nprint(total)",
       "prompt": "כמה פעמים תתבצע הפעולה בשורה 7?",
+      "trace_line": 7,
       "options": [
         "3",
         "4",
@@ -621,6 +637,8 @@ window.__QUESTIONS_FALLBACK__ = {
       "difficulty": "קל",
       "code": "arr = [11, 4, 16, 18, 17, 7, 14]\nacc = 0\nfor x in arr:\n    if x > 10:\n        acc = acc + x\n    else:\n        acc = acc - 1\nprint(acc)",
       "prompt": "מה יהיה ערכו של המשתנה acc בתום האיטרציה ה-4?",
+      "trace_var": "acc",
+      "trace_iter": 4,
       "options": [
         "44",
         "26",
@@ -637,6 +655,8 @@ window.__QUESTIONS_FALLBACK__ = {
       "difficulty": "בינוני",
       "code": "nums = [3, 1, 5, 9, 5, 3]\ntotal = 0\nfor i in range(len(nums)):\n    total = total + nums[i] - nums[-i-1]\nprint(total)",
       "prompt": "מה יהיה ערכו של המשתנה total בתום האיטרציה ה-4?",
+      "trace_var": "total",
+      "trace_iter": 4,
       "options": [
         "-4",
         "-8",

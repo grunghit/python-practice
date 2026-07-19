@@ -1,2 +1,10 @@
 .DS_Store
 __pycache__/
+
+# build-standalone.py output — generated, don't commit
+dist/
+
+# in case anyone runs npm locally (e.g. to update vendored Prism)
+node_modules/
+package-lock.json
+package.json

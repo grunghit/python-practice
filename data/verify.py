@@ -205,20 +205,17 @@ def main():
                 record(qid, cat, "mech", computed == correct, computed, correct)
 
             elif cat == "C3":                   # answer is a line-execution count
-                m = re.search(r"שורה\s*(\d+)", q["prompt"])
-                if not m:
-                    raise ValueError("C3 prompt has no 'שורה N' line reference")
-                lineno = int(m.group(1))
+                if "trace_line" not in q:
+                  raise KeyError(f"C3 id {q['id']} missing 'trace_line'")
+                lineno = q["trace_line"]
                 computed = str(count_line_runs(q["code"], lineno))
                 record(qid, cat, "mech", computed == correct, computed, correct,
                        f"line {lineno}")
 
             elif cat == "C5":                   # answer is var value after iter N
-                mv = re.search(r"המשתנה\s+([A-Za-z_]\w*)", q["prompt"])
-                mn = re.search(r"האיטרציה\s*ה-?\s*(\d+)", q["prompt"])
-                if not (mv and mn):
-                    raise ValueError("C5 prompt missing variable or iteration N")
-                var, n = mv.group(1), int(mn.group(1))
+                if "trace_var" not in q or "trace_iter" not in q:
+                  raise KeyError(f"C5 id {q['id']} missing 'trace_var'/'trace_iter'")
+                var, n = q["trace_var"], q["trace_iter"]
                 computed = as_option_text(var_after_iteration(q["code"], var, n))
                 record(qid, cat, "mech", computed == correct, computed, correct,
                        f"{var} after iter {n}")
